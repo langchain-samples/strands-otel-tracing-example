@@ -14,26 +14,22 @@ load_dotenv()
 
 # logging.getLogger("strands").setLevel(logging.INFO)
 
-os.environ["AWS_REGION"] = "us-east-2"
-os.environ["BYPASS_TOOL_CONSENT"] = "true"
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = (
-    "<langsmith-endpoint>/api/v1/otel"
-)
-os.environ["OTEL_EXPORTER_OTLP_HEADERS"]  = (
-    "x-api-key=<api-key>,Langsmith-Project=<project>"
-)
 
+# Set up an OTEL exporter that will send traces to LangSmith
 strands_telemetry = StrandsTelemetry()
 strands_telemetry.setup_otlp_exporter()
 strands_telemetry.setup_console_exporter()
 strands_telemetry.setup_meter(enable_console_exporter=False, enable_otlp_exporter=False)
 
+
+
+# Create and invoke strands agent
 def create_model():
     return BedrockModel(model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0")
 
 
 def review_file(agent, file_path):
-    prompt = f"Do a short review of {file_path}. Focus on key functionality."
+    prompt = f"Do a short review of otel_strands_share.py. Focus on key functionality."
     return agent(prompt)
 
 
@@ -47,7 +43,7 @@ def main():
     # Invocation 
     tracer = trace.get_tracer(__name__)
     with tracer.start_as_current_span("call_strands") as span:
-        input = "Do a short review of <file-path>. Focus on key functionality."
+        input = "Do a short review of otel_strands_share.py. Focus on key functionality."
         span.set_attribute(f"gen_ai.prompt.0.content", input)
         span.set_attribute(f"gen_ai.prompt.0.role", "user")
         response = agent(input)
