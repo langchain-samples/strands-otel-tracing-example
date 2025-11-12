@@ -1,4 +1,5 @@
 Tracing for Strands Agents
+
 This project demonstrates how to instrument and trace an example strands agent to LangSmith using OpenTelemetry, enabling you to monitor model & agent performance, latency, and token usage.
 
 🛠 Setup
