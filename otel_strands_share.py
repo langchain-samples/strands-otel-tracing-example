@@ -19,7 +19,7 @@ strands_telemetry.setup_meter(enable_console_exporter=False, enable_otlp_exporte
 
 # Create and invoke strands agent
 def create_model():
-    return BedrockModel(model_id="us.anthropic.claude-4-5-sonnet-20250929-v1:0")
+    return BedrockModel(model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 
 def review_file(agent, file_path):
@@ -31,7 +31,7 @@ def main():
     agent = Agent(
         tools=[file_read, file_write, python_repl, shell, journal],
         system_prompt="You are an Expert Software Developer specializing in web frameworks. Your task is to analyze project structures and identify mappings.",
-        model="us.anthropic.claude-4-5-sonnet-20250929-v1:0",
+        model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     )
 
     # Invocation
