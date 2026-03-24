@@ -50,8 +50,8 @@ setup_langsmith_telemetry()
 
 This replaces the standard `StrandsTelemetry().setup_otlp_exporter()` call. It wraps the OTLP exporter with a transformation layer that:
 
-- **Flattens span events into attributes** — Strands emits messages as span events (`gen_ai.user.message`, `gen_ai.choice`, etc.), but LangSmith expects them as `gen_ai.prompt` / `gen_ai.completion` span attributes.
-- **Converts content blocks** — Translates Bedrock/Converse-shaped blocks (`{"text": "..."}`, `{"toolUse": {...}}`) into LangSmith's format (`{"type": "text", "text": "..."}`, `{"type": "tool_use", ...}`).
+- **Standardizes message attributes** — Strands emits messages as span events, but the GenAI semantic conventions specify them as `gen_ai.prompt` / `gen_ai.completion` span attributes. The exporter normalizes to the expected format.
+- **Standardizes content blocks** — Converts Bedrock/Converse-shaped blocks (`{"text": "..."}`, `{"toolUse": {...}}`) into typed blocks (`{"type": "text", "text": "..."}`, `{"type": "tool_use", ...}`).
 - **Maps run types** — Sets `langsmith.span.kind` based on `gen_ai.operation.name` so spans render as the correct type in LangSmith (`chain` for agent invocations, `llm` for model calls, `tool` for tool executions).
 
 The exporter reads endpoint and auth configuration from the standard `OTEL_EXPORTER_OTLP_*` environment variables in this repo's `.env.example` file.
