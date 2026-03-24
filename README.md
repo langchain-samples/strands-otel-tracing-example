@@ -36,3 +36,22 @@ $ uv run otel_strands_share.py
 ```
 
 You can then see an example [trace](https://smith.langchain.com/public/82ddaf82-66bc-417d-ad2f-5d5649303586/r) in the LangSmith project specified!
+
+### Using in your own project
+
+Copy `langsmith_exporter.py` into your project, then call `setup_langsmith_telemetry()` before creating your agent:
+
+```python
+from langsmith_exporter import setup_langsmith_telemetry
+from strands import Agent
+
+setup_langsmith_telemetry()
+```
+
+This replaces the standard `StrandsTelemetry().setup_otlp_exporter()` call. It wraps the OTLP exporter with a transformation layer that:
+
+- **Flattens span events into attributes** — Strands emits messages as span events (`gen_ai.user.message`, `gen_ai.choice`, etc.), but LangSmith expects them as `gen_ai.prompt` / `gen_ai.completion` span attributes.
+- **Converts content blocks** — Translates Bedrock/Converse-shaped blocks (`{"text": "..."}`, `{"toolUse": {...}}`) into LangSmith's format (`{"type": "text", "text": "..."}`, `{"type": "tool_use", ...}`).
+- **Maps run types** — Sets `langsmith.span.kind` based on `gen_ai.operation.name` so spans render as the correct type in LangSmith (`chain` for agent invocations, `llm` for model calls, `tool` for tool executions).
+
+The exporter reads endpoint and auth configuration from the standard `OTEL_EXPORTER_OTLP_*` environment variables in this repo's `.env.example` file.
