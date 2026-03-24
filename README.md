@@ -1,4 +1,4 @@
-Tracing for Strands Agents
+# Tracing for Strands Agents
 
 This project demonstrates how to instrument and trace an example strands agent to LangSmith using OpenTelemetry, enabling you to monitor model & agent performance, latency, and token usage.
 
@@ -35,7 +35,7 @@ $ uv sync
 $ uv run otel_strands_share.py
 ```
 
-You can then see an example [trace](https://smith.langchain.com/public/82ddaf82-66bc-417d-ad2f-5d5649303586/r) in the LangSmith project specified!
+You can then see an example [trace](https://smith.langchain.com/public/bd48a376-0006-401a-9f6f-d71bfa31e10c/r) in the LangSmith project specified!
 
 ### Using in your own project
 
