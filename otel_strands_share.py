@@ -2,19 +2,17 @@ from dotenv import load_dotenv
 from opentelemetry import trace
 from strands import Agent
 from strands.models import BedrockModel
-from strands.telemetry import StrandsTelemetry
 from strands_tools import file_read, file_write, journal, python_repl, shell
+
+from langsmith_exporter import setup_langsmith_telemetry
 
 load_dotenv()
 
 # logging.getLogger("strands").setLevel(logging.INFO)
 
 
-# Set up an OTEL exporter that will send traces to LangSmith
-strands_telemetry = StrandsTelemetry()
-strands_telemetry.setup_otlp_exporter()
-strands_telemetry.setup_console_exporter()
-strands_telemetry.setup_meter(enable_console_exporter=False, enable_otlp_exporter=False)
+# Set up the custom LangSmith-compatible OTEL exporter
+setup_langsmith_telemetry()
 
 
 # Create and invoke strands agent
@@ -36,6 +34,7 @@ def main():
 
     # Invocation
     tracer = trace.get_tracer(__name__)
+    # Optional wrapper for grouping multiple agent spans under a single trace
     with tracer.start_as_current_span("call_strands") as span:
         input = (
             "Do a short review of otel_strands_share.py. Focus on key functionality."
