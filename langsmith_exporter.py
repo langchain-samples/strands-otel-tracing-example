@@ -136,8 +136,7 @@ class LangSmithSpanExporter(SpanExporter):
         """
         span_attrs = dict(span.attributes) if span.attributes else {}
         operation = span_attrs.get("gen_ai.operation.name", "")
-        is_tool_span = operation == "execute_tool"
-        # Strands puts tool metadata in span attributes
+        # Strands puts tool metadata in span attributes (only on tool spans)
         tool_call_id = span_attrs.get("gen_ai.tool.call.id", "")
         tool_name = span_attrs.get("gen_ai.tool.name", "")
 
@@ -158,13 +157,17 @@ class LangSmithSpanExporter(SpanExporter):
 
             if name == "gen_ai.choice":
                 # The final model response is the only true output
-                msg = self._event_to_message(name, attrs, tool_id_to_name=tool_id_to_name)
-                if is_tool_span and tool_call_id:
+                msg = self._event_to_message(
+                    name, attrs, tool_id_to_name=tool_id_to_name
+                )
+                if tool_call_id:
                     msg["tool_call_id"] = tool_call_id
                 output_messages.append(msg)
             elif name in self._MESSAGE_EVENTS:
-                msg = self._event_to_message(name, attrs, tool_id_to_name=tool_id_to_name)
-                if is_tool_span and tool_call_id:
+                msg = self._event_to_message(
+                    name, attrs, tool_id_to_name=tool_id_to_name
+                )
+                if tool_call_id:
                     msg["tool_call_id"] = tool_call_id
                 input_messages.append(msg)
             else:
