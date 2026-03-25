@@ -19,6 +19,8 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SimpleSpanProcessor,
     SpanExporter,
     SpanExportResult,
 )
@@ -83,6 +85,14 @@ class LangSmithSpanExporter(SpanExporter):
         "chat": "llm",
         "invoke_agent": "chain",
         "execute_tool": "tool",
+        "execute_event_loop_cycle": "chain",
+    }
+
+    # -- Span name fallback → langsmith.span.kind mapping ------------------
+    # Some Strands spans (e.g. execute_event_loop_cycle) don't always carry
+    # gen_ai.operation.name.  Fall back to the span *name* in that case.
+    _SPAN_NAME_TO_RUN_TYPE: dict[str, str] = {
+        "execute_event_loop_cycle": "chain",
     }
 
     # -- Event name → role mapping ----------------------------------------
@@ -124,6 +134,20 @@ class LangSmithSpanExporter(SpanExporter):
         Returns:
             A new ReadableSpan with the message attributes added.
         """
+        span_attrs = dict(span.attributes) if span.attributes else {}
+        operation = span_attrs.get("gen_ai.operation.name", "")
+        is_tool_span = operation == "execute_tool"
+        # Strands puts tool metadata in span attributes
+        tool_call_id = span_attrs.get("gen_ai.tool.call.id", "")
+        tool_name = span_attrs.get("gen_ai.tool.name", "")
+
+        # Maps toolUseId → tool name so tool-result messages can be labelled.
+        # Seeded from span attrs on tool spans; extended inline as we encounter
+        # assistant/choice events that contain toolUse blocks.
+        tool_id_to_name: dict[str, str] = {}
+        if tool_name and tool_call_id:
+            tool_id_to_name[tool_call_id] = tool_name
+
         input_messages: list[dict[str, Any]] = []
         output_messages: list[dict[str, Any]] = []
         remaining_events: list[Any] = []
@@ -134,11 +158,15 @@ class LangSmithSpanExporter(SpanExporter):
 
             if name == "gen_ai.choice":
                 # The final model response is the only true output
-                output_messages.append(self._event_to_message(name, attrs))
+                msg = self._event_to_message(name, attrs, tool_id_to_name=tool_id_to_name)
+                if is_tool_span and tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                output_messages.append(msg)
             elif name in self._MESSAGE_EVENTS:
-                # Everything else (user, system, tool, intermediate assistant)
-                # is conversation history → input
-                input_messages.append(self._event_to_message(name, attrs))
+                msg = self._event_to_message(name, attrs, tool_id_to_name=tool_id_to_name)
+                if is_tool_span and tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                input_messages.append(msg)
             else:
                 # Preserve non-message events as-is
                 remaining_events.append(event)
@@ -147,15 +175,18 @@ class LangSmithSpanExporter(SpanExporter):
         # LangSmith's server-side OTEL ingest expects inputs under "gen_ai.prompt"
         # and outputs under "gen_ai.completion" (matching the attribute names used
         # by LangSmith's own OTELExporter).
-        new_attrs: dict[str, Any] = dict(span.attributes) if span.attributes else {}
+        new_attrs: dict[str, Any] = dict(span_attrs)
         if input_messages:
             new_attrs["gen_ai.prompt"] = json.dumps({"messages": input_messages})
         if output_messages:
             new_attrs["gen_ai.completion"] = json.dumps({"messages": output_messages})
 
-        # Map gen_ai.operation.name to langsmith.span.kind (run type)
-        operation = new_attrs.get("gen_ai.operation.name", "")
+        # Map gen_ai.operation.name to langsmith.span.kind (run type).
+        # Some Strands spans (e.g. execute_event_loop_cycle) don't carry
+        # gen_ai.operation.name — fall back to the span name.
         run_type = self._OPERATION_TO_RUN_TYPE.get(operation)
+        if not run_type:
+            run_type = self._SPAN_NAME_TO_RUN_TYPE.get(span.name)
         if run_type:
             new_attrs["langsmith.span.kind"] = run_type
 
@@ -179,7 +210,11 @@ class LangSmithSpanExporter(SpanExporter):
         )
 
     def _event_to_message(
-        self, event_name: str, attrs: dict[str, Any]
+        self,
+        event_name: str,
+        attrs: dict[str, Any],
+        *,
+        tool_id_to_name: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Convert a single span event into a message dict, injecting ``role`` if missing.
 
@@ -191,6 +226,7 @@ class LangSmithSpanExporter(SpanExporter):
         Args:
             event_name: The OTEL event name (e.g. ``gen_ai.user.message``).
             attrs: The event's attribute dict.
+            tool_id_to_name: Optional mapping of tool-call IDs to tool names.
 
         Returns:
             A message dict with at least ``role`` and ``content`` keys.
@@ -210,16 +246,102 @@ class LangSmithSpanExporter(SpanExporter):
         except (json.JSONDecodeError, TypeError):
             content = raw
 
-        # Convert Bedrock-shaped content blocks to LangSmith-shaped blocks
+        # Tool messages in chat history contain Bedrock toolResult blocks.
+        # Flatten them into the format LangSmith expects: a top-level
+        # tool_call_id and plain-text content.
+        if event_name == "gen_ai.tool.message" and isinstance(content, list):
+            return self._flatten_tool_result_message(
+                content,
+                tool_id_to_name=tool_id_to_name or {},
+            )
+
+        # Convert Bedrock-shaped content blocks to LangSmith-shaped blocks.
+        # While iterating, harvest toolUse names so later tool-result messages
+        # can be labelled (assistant messages precede their tool results).
         if isinstance(content, list):
-            content = [self._convert_content_block(block) for block in content]
+            converted = []
+            for block in content:
+                if (
+                    tool_id_to_name is not None
+                    and isinstance(block, dict)
+                    and "toolUse" in block
+                ):
+                    tu = block["toolUse"]
+                    tid, tname = tu.get("toolUseId", ""), tu.get("name", "")
+                    if tid and tname:
+                        tool_id_to_name[tid] = tname
+                converted.append(self._convert_content_block(block))
+            content = converted
 
         msg: dict[str, Any] = {"role": role, "content": content}
+
+        # Carry over tool_call_id from event attributes (Strands stores it as "id")
+        if "id" in attrs:
+            msg["tool_call_id"] = attrs["id"]
 
         # Carry over finish_reason for choice events
         if "finish_reason" in attrs:
             msg["finish_reason"] = attrs["finish_reason"]
 
+        return msg
+
+    @staticmethod
+    def _flatten_tool_result_message(
+        content_blocks: list[Any],
+        *,
+        tool_id_to_name: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Flatten Bedrock ``toolResult`` content blocks into a LangSmith tool message.
+
+        Bedrock tool results arrive as::
+
+            [{"toolResult": {"toolUseId": "x", "status": "success",
+                             "content": [{"text": "..."}]}}]
+
+        LangSmith expects tool messages as::
+
+            {"role": "tool", "name": "my_tool", "tool_call_id": "x", "content": "..."}
+
+        If there are multiple toolResult blocks they are joined with newlines.
+        Non-toolResult blocks are converted normally and appended.
+
+        Args:
+            content_blocks: The parsed content block list from the event.
+            tool_id_to_name: Optional mapping of tool-call IDs to tool names.
+
+        Returns:
+            A flat tool message dict.
+        """
+        tool_call_id = ""
+        text_parts: list[str] = []
+        other_blocks: list[Any] = []
+
+        for block in content_blocks:
+            if isinstance(block, dict) and "toolResult" in block:
+                tr = block["toolResult"]
+                if not tool_call_id:
+                    tool_call_id = tr.get("toolUseId", "")
+                # Extract text from nested content blocks
+                for nested in tr.get("content", []):
+                    if isinstance(nested, dict) and "text" in nested:
+                        text_parts.append(nested["text"])
+                    else:
+                        other_blocks.append(nested)
+            else:
+                other_blocks.append(block)
+
+        if text_parts:
+            flat_content: Any = "\n".join(text_parts)
+        else:
+            flat_content = other_blocks
+
+        msg: dict[str, Any] = {"role": "tool", "content": flat_content}
+        # Look up the tool name from the toolUseId → name mapping
+        tool_name = (tool_id_to_name or {}).get(tool_call_id, "")
+        if tool_name:
+            msg["name"] = tool_name
+        if tool_call_id:
+            msg["tool_call_id"] = tool_call_id
         return msg
 
     @staticmethod
@@ -296,12 +418,22 @@ def create_langsmith_exporter(**otlp_kwargs) -> LangSmithSpanExporter:
     return LangSmithSpanExporter(delegate=delegate)
 
 
-def setup_langsmith_telemetry() -> None:
+def setup_langsmith_telemetry(*, console: bool = False) -> None:
     """Wire up Strands telemetry with the LangSmith-compatible exporter.
 
     Call this instead of (or in addition to) the standard
     ``StrandsTelemetry().setup_otlp_exporter()`` flow.
+
+    Args:
+        console: If True, also add a ConsoleSpanExporter that prints transformed
+                 spans to stdout (useful for debugging).
     """
     telemetry = StrandsTelemetry()
     exporter = create_langsmith_exporter()
     telemetry.tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    if console:
+        console_exporter = LangSmithSpanExporter(delegate=ConsoleSpanExporter())
+        telemetry.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(console_exporter)
+        )
